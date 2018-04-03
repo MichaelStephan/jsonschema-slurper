@@ -20,7 +20,10 @@
                                       :entitlementRule/technicalAssetId
                                       :technicalAssetId/composedId
                                       :product/provider
-                                      :product/composedId}
+                                      :product/composedId
+                                      :technicalAsset/prerequisites
+                                      :prerequisites/technicalAssetPrerequisites
+                                      :prerequisites/textualPrerequisites}
                                     id))}))
 
 (defn make-singular [nsk]
@@ -44,7 +47,7 @@
                            (traverse-schema resolve-path ref (make-singular k)))
                          (traverse-schema resolve-path f (make-singular k) items))
                        (datomic-schema nsk :db.type/ref :db.cardinality/many title))
-         "object" (conj (if (nil? $ref)
+         "object" (conj (if (nil? $ref) ; TODO deal with nested schemas
                           (traverse-schema resolve-path f k properties)
                           (when-not (.startsWith $ref "#/definitions/")
                             (traverse-schema resolve-path $ref k)))
@@ -58,14 +61,19 @@
   (reduce
       (fn [ret [k v]]
         (let [nsk (make-namespaced prefix k)]
-          (if (or (= k :prerequisites) ; skip
-                  (= k :ratePlans))
-            ret
-            (assoc ret nsk
-                   (cond
-                     (map? v) (traverse-catalog k v)
-                     (coll? v) (doall (map (partial traverse-catalog (make-singular k)) v))
-                     :else v)))))
+          (cond
+            (or #_(= k :prerequisites) ; TODO deal with full structure 
+                  (= k :ratePlans)) ret
+            (= k :id) (assoc ret
+                             :db/id v
+                             nsk v) 
+            (= k :composedId) (assoc ret
+                                     :db/id (str (:id v) "/" (:version v) "/" (:catalog v))
+                                     nsk (traverse-catalog k v)) 
+            :else (cond
+                    (map? v) (let [x (traverse-catalog k v)] (if (empty? x) ret (assoc ret nsk x)))
+                    (coll? v) (let [x (remove empty? (map (partial traverse-catalog (make-singular k)) v))] (if (empty? x) ret (assoc ret nsk x))) 
+                    :else (assoc ret nsk v)))))
       {}
       catalog))
 
@@ -126,12 +134,24 @@
                          {:db/ident :product/contractTypes
                           :db/valueType :db.type/ref
                           :db/cardinality :db.cardinality/many
-                          :db/isComponent true}])))
+                          :db/isComponent true}
+                         {:db/ident :technicalAssetPrerequisite/technicalAssetId
+                          :db/valueType :db.type/ref
+                          :db/cardinality :db.cardinality/one}
+                         ])))
 
 (def catalog (traverse-catalog "venezia"
                                (-> "/Users/i303874/dev/cmt-prod/cmt-cis-htp740461067-2018-03-01-18-23-30.json"
                                    (slurp)
                                    (json/read-str :key-fn keyword))))
+
+
+#_[:find ?technical-asset-technical-name
+ :where
+ [_ :venezia/products ?product]
+ [?product :product/entitlementRules ?entitlement-rule]
+ [?entitlement-rule :entitlementRule/technicalAssetId ?technical-asset]
+ [?technical-asset :technicalAsset/technicalName ?technical-asset-technical-name]]
 
 #_(spit "/Users/i303874/Desktop/schema.edn" (with-out-str (pp/pprint schema)))
 
@@ -145,7 +165,7 @@
   
   (let [uri "datomic:dev://localhost:4334/venezia"
         conn (d/connect uri)]
-    (d/transact conn [catalog] ))
+    (d/transact conn [catalog]))
  
   (let [uri "datomic:dev://localhost:4334/venezia"
         conn (d/connect uri)]
